@@ -8,6 +8,9 @@ on:
 env:
   ANDROID_HOME: /usr/lib/android-sdk
   JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+  GODOT_ANDROID_KEYSTORE_DEBUG_PATH: /root/debug.keystore
+  GODOT_ANDROID_KEYSTORE_DEBUG_USER: androiddebugkey
+  GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD: android
 
 jobs:
   android-debug:
@@ -21,7 +24,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Locate or extract Godot project
+      - name: Locate or extract newest Godot project
         shell: bash
         run: |
           set -euo pipefail
@@ -29,9 +32,19 @@ jobs:
           PROJECT_FILE="$(find "$GITHUB_WORKSPACE" -maxdepth 6 -type f -name project.godot -print -quit || true)"
 
           if [ -z "$PROJECT_FILE" ]; then
-            ZIP_FILE="$(find "$GITHUB_WORKSPACE" -maxdepth 2 -type f \
-              \( -iname 'neon-survivor*.zip' -o -iname '*.zip' \) \
-              -print -quit || true)"
+            ZIP_FILE="$(
+              find "$GITHUB_WORKSPACE" -maxdepth 2 -type f -iname 'neon-survivor*.zip' -print \
+              | sort -V \
+              | tail -n 1
+            )"
+
+            if [ -z "$ZIP_FILE" ]; then
+              ZIP_FILE="$(
+                find "$GITHUB_WORKSPACE" -maxdepth 2 -type f -iname '*.zip' -print \
+                | sort -V \
+                | tail -n 1
+              )"
+            fi
 
             if [ -z "$ZIP_FILE" ]; then
               echo "ERROR: project.godot veya proje ZIP'i bulunamadi."
@@ -62,15 +75,29 @@ jobs:
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
           echo "Godot project: $PROJECT_DIR"
 
-      - name: Fix project permissions
+      - name: Prepare Godot CI environment
         shell: bash
         run: |
           set -euo pipefail
-          chmod -R u+rwX "$PROJECT_DIR"
-          mkdir -p "$PROJECT_DIR/.godot/editor"
-          chmod -R u+rwX "$PROJECT_DIR/.godot"
 
-      - name: Install Android SDK 34 requirements
+          chmod -R u+rwX "$PROJECT_DIR"
+
+          mkdir -p "$HOME/.config/godot"
+          mkdir -p "$HOME/.local/share/godot/export_templates"
+
+          if [ -d "/root/.config/godot" ]; then
+            cp -a /root/.config/godot/. "$HOME/.config/godot/"
+          fi
+
+          if [ -d "/root/.local/share/godot/export_templates" ]; then
+            cp -a /root/.local/share/godot/export_templates/. \
+              "$HOME/.local/share/godot/export_templates/"
+          fi
+
+          test -f "$HOME/.local/share/godot/export_templates/4.3.stable/android_debug.apk"
+          test -f /root/debug.keystore
+
+      - name: Install Android 34 toolchain
         shell: bash
         run: |
           set -euo pipefail
@@ -80,60 +107,41 @@ jobs:
           sdkmanager --sdk_root="$ANDROID_HOME" \
             "platform-tools" \
             "build-tools;34.0.0" \
-            "platforms;android-34"
+            "platforms;android-34" \
+            "cmdline-tools;latest" \
+            "cmake;3.10.2.4988404" \
+            "ndk;23.2.8568313"
 
-      - name: Prepare Godot export environment
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          mkdir -p "$HOME/.local/share/godot/export_templates"
-          mkdir -p "$HOME/.config/godot"
-          mkdir -p "$HOME/.android"
-
-          if [ -d "/root/.local/share/godot/export_templates/4.3.stable" ]; then
-            rm -rf "$HOME/.local/share/godot/export_templates/4.3.stable"
-            cp -R "/root/.local/share/godot/export_templates/4.3.stable" \
-              "$HOME/.local/share/godot/export_templates/4.3.stable"
-          fi
-
-          test -f "$HOME/.local/share/godot/export_templates/4.3.stable/android_debug.apk"
-
-          if [ -f "/root/debug.keystore" ]; then
-            cp /root/debug.keystore "$HOME/.android/debug.keystore"
-          elif [ ! -f "$HOME/.android/debug.keystore" ]; then
-            keytool -genkeypair \
-              -keystore "$HOME/.android/debug.keystore" \
-              -storepass android \
-              -alias androiddebugkey \
-              -keypass android \
-              -dname "CN=Android Debug,O=Android,C=US" \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 10000
-          fi
-
-          chmod 600 "$HOME/.android/debug.keystore"
-
-          cat > "$HOME/.config/godot/editor_settings-4.3.tres" <<EOF
-          [gd_resource type="EditorSettings" format=3]
-
-          [resource]
-          export/android/java_sdk_path = "$JAVA_HOME"
-          export/android/android_sdk_path = "$ANDROID_HOME"
-          export/android/debug_keystore = "$HOME/.android/debug.keystore"
-          export/android/debug_keystore_user = "androiddebugkey"
-          export/android/debug_keystore_pass = "android"
-          EOF
-
-      - name: Normalize Android export preset
+      - name: Fix Android project settings
         shell: bash
         run: |
           set -euo pipefail
           cd "$PROJECT_DIR"
 
-          if [ ! -f export_presets.cfg ]; then
-            cat > export_presets.cfg <<'EOF'
+          # Godot 4.3 Android export can fail with an empty configuration-error
+          # message when ETC2/ASTC mobile texture import is disabled.
+          sed -i '/^rendering\/textures\/vram_compression\/import_etc2_astc=/d' project.godot
+
+          if grep -q '^\[rendering\]' project.godot; then
+            sed -i '/^\[rendering\]/a rendering/textures/vram_compression/import_etc2_astc=true' project.godot
+          else
+            printf '\n[rendering]\nrendering/textures/vram_compression/import_etc2_astc=true\n' >> project.godot
+          fi
+
+          # Force a clean import after changing texture-compression settings.
+          rm -rf .godot
+          mkdir -p .godot/editor
+
+          echo "Android texture setting:"
+          grep -n 'rendering/textures/vram_compression/import_etc2_astc=true' project.godot
+
+      - name: Write known-good Android export preset
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+
+          cat > export_presets.cfg <<'EOF'
           [preset.0]
 
           name="Android Debug"
@@ -158,47 +166,35 @@ jobs:
           custom_template/release=""
           gradle_build/use_gradle_build=false
           gradle_build/export_format=0
+          gradle_build/min_sdk=""
+          gradle_build/target_sdk=""
+          keystore/debug=""
+          keystore/debug_user=""
+          keystore/debug_password=""
+          keystore/release=""
+          keystore/release_user=""
+          keystore/release_password=""
           architectures/armeabi-v7a=false
           architectures/arm64-v8a=true
+          architectures/x86=false
+          architectures/x86_64=false
+          version/code=7
+          version/name="0.1.7"
           package/unique_name="com.elxvro.neonsurvivor"
           package/name="Neon Survivor"
-          version/code=6
-          version/name="0.1.6"
+          package/signed=true
+          graphics/opengl_debug=false
           screen/immersive_mode=true
           EOF
-          fi
 
-          # Godot 4.3: Min SDK / Target SDK overrides are invalid when
-          # gradle_build/use_gradle_build=false. Remove them completely.
-          sed -i '/^gradle_build\/min_sdk=/d' export_presets.cfg
-          sed -i '/^gradle_build\/target_sdk=/d' export_presets.cfg
-
-          # Keep non-Gradle export enabled.
-          if grep -q '^gradle_build/use_gradle_build=' export_presets.cfg; then
-            sed -i 's/^gradle_build\/use_gradle_build=.*/gradle_build\/use_gradle_build=false/' export_presets.cfg
-          else
-            sed -i '/^\[preset.0.options\]/a gradle_build/use_gradle_build=false' export_presets.cfg
-          fi
-
-          PRESET_NAME="$(awk -F'"' '/^name=/{print $2; exit}' export_presets.cfg)"
-
-          if [ -z "$PRESET_NAME" ]; then
-            echo "ERROR: Android export preset adi okunamadi."
-            cat export_presets.cfg
-            exit 1
-          fi
-
-          echo "EXPORT_PRESET=$PRESET_NAME" >> "$GITHUB_ENV"
-          echo "Detected preset: $PRESET_NAME"
-          echo "Normalized export preset:"
           cat export_presets.cfg
 
-      - name: Import Godot project
+      - name: Import project
         shell: bash
         run: |
           set -euo pipefail
           cd "$PROJECT_DIR"
-          godot --headless --editor --quit --path .
+          godot --headless --verbose --editor --quit --path .
 
       - name: Build debug APK
         shell: bash
@@ -207,19 +203,21 @@ jobs:
           cd "$PROJECT_DIR"
           mkdir -p build
 
-          echo "Building with preset: $EXPORT_PRESET"
-
           godot --headless --verbose --path . \
-            --export-debug "$EXPORT_PRESET" \
+            --export-debug "Android Debug" \
             "build/neon-survivor-debug.apk"
 
           test -s build/neon-survivor-debug.apk
-          ls -lh build/neon-survivor-debug.apk
+          mkdir -p "$GITHUB_WORKSPACE/artifacts"
+          cp build/neon-survivor-debug.apk \
+            "$GITHUB_WORKSPACE/artifacts/neon-survivor-debug.apk"
+
+          ls -lh "$GITHUB_WORKSPACE/artifacts/neon-survivor-debug.apk"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: neon-survivor-v0.1.6-apk
-          path: ${{ env.PROJECT_DIR }}/build/neon-survivor-debug.apk
+          name: neon-survivor-v0.1.7-apk
+          path: artifacts/neon-survivor-debug.apk
           if-no-files-found: error
           retention-days: 14
