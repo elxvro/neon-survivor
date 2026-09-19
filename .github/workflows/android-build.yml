@@ -6,11 +6,8 @@ on:
   pull_request:
 
 env:
+  GODOT_VERSION: "4.3"
   ANDROID_HOME: /usr/lib/android-sdk
-  JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
-  GODOT_ANDROID_KEYSTORE_DEBUG_PATH: /root/debug.keystore
-  GODOT_ANDROID_KEYSTORE_DEBUG_USER: androiddebugkey
-  GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD: android
 
 jobs:
   android-debug:
@@ -24,7 +21,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Locate or extract newest Godot project
+      - name: Locate or extract Godot project
         shell: bash
         run: |
           set -euo pipefail
@@ -39,15 +36,7 @@ jobs:
             )"
 
             if [ -z "$ZIP_FILE" ]; then
-              ZIP_FILE="$(
-                find "$GITHUB_WORKSPACE" -maxdepth 2 -type f -iname '*.zip' -print \
-                | sort -V \
-                | tail -n 1
-              )"
-            fi
-
-            if [ -z "$ZIP_FILE" ]; then
-              echo "ERROR: project.godot veya proje ZIP'i bulunamadi."
+              echo "ERROR: project.godot veya Neon Survivor ZIP bulunamadi."
               exit 1
             fi
 
@@ -75,67 +64,61 @@ jobs:
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
           echo "Godot project: $PROJECT_DIR"
 
-      - name: Prepare Godot CI environment
+      - name: Setup Godot CI
         shell: bash
         run: |
           set -euo pipefail
 
           chmod -R u+rwX "$PROJECT_DIR"
 
-          mkdir -p "$HOME/.config/godot"
           mkdir -p "$HOME/.local/share/godot/export_templates"
+          mkdir -p "$HOME/.config"
 
-          if [ -d "/root/.config/godot" ]; then
-            cp -a /root/.config/godot/. "$HOME/.config/godot/"
-          fi
+          rm -rf "$HOME/.config/godot"
+          cp -a /root/.config/godot "$HOME/.config/godot"
 
-          if [ -d "/root/.local/share/godot/export_templates" ]; then
-            cp -a /root/.local/share/godot/export_templates/. \
-              "$HOME/.local/share/godot/export_templates/"
-          fi
+          rm -rf "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
+          cp -a "/root/.local/share/godot/export_templates/${GODOT_VERSION}.stable" \
+            "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
 
-          test -f "$HOME/.local/share/godot/export_templates/4.3.stable/android_debug.apk"
-          test -f /root/debug.keystore
+          test -f "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable/android_debug.apk"
 
-      - name: Install Android 34 toolchain
+      - name: Install required Android 34 packages
         shell: bash
         run: |
           set -euo pipefail
 
           yes | sdkmanager --sdk_root="$ANDROID_HOME" --licenses >/dev/null 2>&1 || true
-
           sdkmanager --sdk_root="$ANDROID_HOME" \
             "platform-tools" \
             "build-tools;34.0.0" \
-            "platforms;android-34" \
-            "cmdline-tools;latest" \
-            "cmake;3.10.2.4988404" \
-            "ndk;23.2.8568313"
+            "platforms;android-34"
 
-      - name: Fix Android project settings
+      - name: Fix Android texture import setting
         shell: bash
         run: |
           set -euo pipefail
           cd "$PROJECT_DIR"
 
-          # Godot 4.3 Android export can fail with an empty configuration-error
-          # message when ETC2/ASTC mobile texture import is disabled.
+          # IMPORTANT:
+          # project.godot uses section-relative keys.
+          # Under [rendering], this MUST be:
+          # textures/vram_compression/import_etc2_astc=true
           sed -i '/^rendering\/textures\/vram_compression\/import_etc2_astc=/d' project.godot
+          sed -i '/^textures\/vram_compression\/import_etc2_astc=/d' project.godot
 
           if grep -q '^\[rendering\]' project.godot; then
-            sed -i '/^\[rendering\]/a rendering/textures/vram_compression/import_etc2_astc=true' project.godot
+            sed -i '/^\[rendering\]/a textures/vram_compression/import_etc2_astc=true' project.godot
           else
-            printf '\n[rendering]\nrendering/textures/vram_compression/import_etc2_astc=true\n' >> project.godot
+            printf '\n[rendering]\ntextures/vram_compression/import_etc2_astc=true\n' >> project.godot
           fi
 
-          # Force a clean import after changing texture-compression settings.
           rm -rf .godot
-          mkdir -p .godot/editor
 
-          echo "Android texture setting:"
-          grep -n 'rendering/textures/vram_compression/import_etc2_astc=true' project.godot
+          echo "Verified setting:"
+          grep -n '^textures/vram_compression/import_etc2_astc=true$' project.godot
 
-      - name: Write known-good Android export preset
+      - name: Write clean Android export preset
         shell: bash
         run: |
           set -euo pipefail
@@ -153,11 +136,7 @@ jobs:
           export_filter="all_resources"
           include_filter=""
           exclude_filter=""
-          export_path="build/neon-survivor-debug.apk"
-          encryption_include_filters=""
-          encryption_exclude_filters=""
-          encrypt_pck=false
-          encrypt_directory=false
+          export_path="build/android/neon-survivor-debug.apk"
           script_export_mode=2
 
           [preset.0.options]
@@ -166,28 +145,14 @@ jobs:
           custom_template/release=""
           gradle_build/use_gradle_build=false
           gradle_build/export_format=0
-          gradle_build/min_sdk=""
-          gradle_build/target_sdk=""
-          keystore/debug=""
-          keystore/debug_user=""
-          keystore/debug_password=""
-          keystore/release=""
-          keystore/release_user=""
-          keystore/release_password=""
           architectures/armeabi-v7a=false
           architectures/arm64-v8a=true
-          architectures/x86=false
-          architectures/x86_64=false
-          version/code=7
-          version/name="0.1.7"
           package/unique_name="com.elxvro.neonsurvivor"
           package/name="Neon Survivor"
-          package/signed=true
-          graphics/opengl_debug=false
+          version/code=8
+          version/name="0.1.8"
           screen/immersive_mode=true
           EOF
-
-          cat export_presets.cfg
 
       - name: Import project
         shell: bash
@@ -201,15 +166,17 @@ jobs:
         run: |
           set -euo pipefail
           cd "$PROJECT_DIR"
-          mkdir -p build
+
+          mkdir -p build/android
 
           godot --headless --verbose --path . \
             --export-debug "Android Debug" \
-            "build/neon-survivor-debug.apk"
+            "build/android/neon-survivor-debug.apk"
 
-          test -s build/neon-survivor-debug.apk
+          test -s build/android/neon-survivor-debug.apk
+
           mkdir -p "$GITHUB_WORKSPACE/artifacts"
-          cp build/neon-survivor-debug.apk \
+          cp build/android/neon-survivor-debug.apk \
             "$GITHUB_WORKSPACE/artifacts/neon-survivor-debug.apk"
 
           ls -lh "$GITHUB_WORKSPACE/artifacts/neon-survivor-debug.apk"
@@ -217,7 +184,7 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: neon-survivor-v0.1.7-apk
+          name: neon-survivor-v0.1.8-apk
           path: artifacts/neon-survivor-debug.apk
           if-no-files-found: error
           retention-days: 14
