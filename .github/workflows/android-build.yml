@@ -1,0 +1,86 @@
+name: Neon Survivor APK Build
+
+on:
+  workflow_dispatch:
+  push:
+  pull_request:
+
+env:
+  GODOT_VERSION: "4.3"
+  EXPORT_NAME: "neon-survivor-debug"
+
+jobs:
+  android-debug:
+    name: Build Android APK
+    runs-on: ubuntu-24.04
+
+    container:
+      image: barichello/godot-ci:4.3
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Prepare Godot templates and Android settings
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p ~/.local/share/godot/export_templates
+          mkdir -p ~/.config
+          mkdir -p ~/.android
+
+          if [ -d "/root/.config/godot" ] && [ ! -d "$HOME/.config/godot" ]; then
+            mv /root/.config/godot "$HOME/.config/godot"
+          fi
+
+          if [ -d "/root/.local/share/godot/export_templates/${GODOT_VERSION}.stable" ] && \
+             [ ! -d "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable" ]; then
+            mv "/root/.local/share/godot/export_templates/${GODOT_VERSION}.stable" \
+               "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
+          fi
+
+          SETTINGS_FILE="$HOME/.config/godot/editor_settings-4.3.tres"
+
+          if [ -f "$SETTINGS_FILE" ]; then
+            echo 'export/android/java_sdk_path = "/usr/lib/jvm/java-17-openjdk-amd64"' >> "$SETTINGS_FILE"
+          fi
+
+          if [ ! -f "$HOME/.android/debug.keystore" ]; then
+            keytool -genkeypair -v \
+              -keystore "$HOME/.android/debug.keystore" \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -dname "CN=Android Debug,O=Android,C=US" \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000
+          fi
+
+      - name: Import Godot project
+        shell: bash
+        run: |
+          set -e
+          godot --headless --verbose --editor --quit --path .
+
+      - name: Build debug APK
+        shell: bash
+        run: |
+          set -e
+          mkdir -p build/android
+          godot --headless --verbose --path . \
+            --export-debug "Android Debug" \
+            "build/android/${EXPORT_NAME}.apk"
+
+          test -f "build/android/${EXPORT_NAME}.apk"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: neon-survivor-v0.1.1-apk
+          path: build/android/neon-survivor-debug.apk
+          if-no-files-found: error
+          retention-days: 14
