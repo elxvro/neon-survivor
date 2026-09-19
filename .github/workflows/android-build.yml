@@ -5,51 +5,98 @@ on:
   push:
   pull_request:
 
-env:
-  GODOT_VERSION: "4.3"
-  EXPORT_NAME: "neon-survivor-debug"
-
 jobs:
   android-debug:
-    name: Build Android APK
+    name: Build debug APK
     runs-on: ubuntu-24.04
-
     container:
       image: barichello/godot-ci:4.3
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          lfs: true
 
-      - name: Prepare Godot templates and Android settings
+      - name: Find Godot project
         shell: bash
         run: |
-          set -e
-
-          mkdir -p ~/.local/share/godot/export_templates
-          mkdir -p ~/.config
-          mkdir -p ~/.android
-
-          if [ -d "/root/.config/godot" ] && [ ! -d "$HOME/.config/godot" ]; then
-            mv /root/.config/godot "$HOME/.config/godot"
+          set -euo pipefail
+          PROJECT_FILE="$(find "$GITHUB_WORKSPACE" -maxdepth 5 -type f -name project.godot | head -n 1)"
+          if [ -z "$PROJECT_FILE" ]; then
+            echo "ERROR: project.godot bulunamadi. ZIP dosyasini tek parca yuklemeyin; icindekileri repoya cikarin."
+            exit 1
           fi
+          PROJECT_DIR="$(dirname "$PROJECT_FILE")"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Godot project found at: $PROJECT_DIR"
 
-          if [ -d "/root/.local/share/godot/export_templates/${GODOT_VERSION}.stable" ] && \
-             [ ! -d "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable" ]; then
-            mv "/root/.local/share/godot/export_templates/${GODOT_VERSION}.stable" \
-               "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
+      - name: Fix project write permissions
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod -R u+rwX "$GITHUB_WORKSPACE"
+          mkdir -p "$PROJECT_DIR/.godot/editor"
+          chmod -R u+rwX "$PROJECT_DIR/.godot"
+
+      - name: Install Godot export templates
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/share/godot/export_templates"
+          if [ -d "/root/.local/share/godot/export_templates/4.3.stable" ]; then
+            rm -rf "$HOME/.local/share/godot/export_templates/4.3.stable"
+            cp -R "/root/.local/share/godot/export_templates/4.3.stable" \
+              "$HOME/.local/share/godot/export_templates/4.3.stable"
           fi
+          test -d "$HOME/.local/share/godot/export_templates/4.3.stable"
 
-          SETTINGS_FILE="$HOME/.config/godot/editor_settings-4.3.tres"
+      - name: Ensure Android export preset exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+          if [ ! -f export_presets.cfg ]; then
+            echo "export_presets.cfg missing; creating it automatically."
+            cat > export_presets.cfg <<'EOF'
+          [preset.0]
 
-          if [ -f "$SETTINGS_FILE" ]; then
-            echo 'export/android/java_sdk_path = "/usr/lib/jvm/java-17-openjdk-amd64"' >> "$SETTINGS_FILE"
+          name="Android Debug"
+          platform="Android"
+          runnable=true
+          advanced_options=false
+          dedicated_server=false
+          custom_features=""
+          export_filter="all_resources"
+          include_filter=""
+          exclude_filter=""
+          export_path="build/android/neon-survivor-debug.apk"
+          script_export_mode=2
+
+          [preset.0.options]
+
+          custom_template/debug=""
+          custom_template/release=""
+          gradle_build/use_gradle_build=false
+          gradle_build/export_format=0
+          architectures/armeabi-v7a=false
+          architectures/arm64-v8a=true
+          package/unique_name="com.elxvro.neonsurvivor"
+          package/name="Neon Survivor"
+          version/code=2
+          version/name="0.1.2"
+          screen/immersive_mode=true
+          EOF
           fi
+          echo "Using export preset:"
+          ls -l export_presets.cfg
+          grep -n 'name="Android Debug"' export_presets.cfg
 
+      - name: Prepare Android debug keystore
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.android"
           if [ ! -f "$HOME/.android/debug.keystore" ]; then
-            keytool -genkeypair -v \
+            keytool -genkeypair \
               -keystore "$HOME/.android/debug.keystore" \
               -storepass android \
               -alias androiddebugkey \
@@ -60,27 +107,29 @@ jobs:
               -validity 10000
           fi
 
-      - name: Import Godot project
+      - name: Import project
         shell: bash
         run: |
-          set -e
-          godot --headless --verbose --editor --quit --path .
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+          godot --headless --editor --quit --path .
 
       - name: Build debug APK
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
+          cd "$PROJECT_DIR"
           mkdir -p build/android
           godot --headless --verbose --path . \
             --export-debug "Android Debug" \
-            "build/android/${EXPORT_NAME}.apk"
-
-          test -f "build/android/${EXPORT_NAME}.apk"
+            "build/android/neon-survivor-debug.apk"
+          test -s build/android/neon-survivor-debug.apk
+          ls -lh build/android/neon-survivor-debug.apk
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: neon-survivor-v0.1.1-apk
-          path: build/android/neon-survivor-debug.apk
+          name: neon-survivor-v0.1.2-apk
+          path: ${{ env.PROJECT_DIR }}/build/android/neon-survivor-debug.apk
           if-no-files-found: error
           retention-days: 14
