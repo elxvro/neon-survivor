@@ -24,19 +24,14 @@ jobs:
           PROJECT_FILE="$(find "$GITHUB_WORKSPACE" -maxdepth 6 -type f -name project.godot -print -quit || true)"
 
           if [ -z "$PROJECT_FILE" ]; then
-            echo "project.godot repo icinde acik halde yok. ZIP aranacak."
-
             ZIP_FILE="$(find "$GITHUB_WORKSPACE" -maxdepth 2 -type f \
               \( -iname 'neon-survivor*.zip' -o -iname '*.zip' \) \
               -print -quit || true)"
 
             if [ -z "$ZIP_FILE" ]; then
-              echo "ERROR: Ne project.godot ne de ZIP dosyasi bulundu."
-              echo "Repo kokune Neon Survivor proje ZIP'ini yukleyin."
+              echo "ERROR: project.godot veya ZIP dosyasi bulunamadi."
               exit 1
             fi
-
-            echo "ZIP bulundu: $ZIP_FILE"
 
             if ! command -v unzip >/dev/null 2>&1; then
               apt-get update
@@ -52,16 +47,13 @@ jobs:
           fi
 
           if [ -z "$PROJECT_FILE" ]; then
-            echo "ERROR: ZIP acildi fakat project.godot bulunamadi."
+            echo "ERROR: project.godot bulunamadi."
             exit 1
           fi
 
           PROJECT_DIR="$(dirname "$PROJECT_FILE")"
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
           echo "Godot project: $PROJECT_DIR"
-
-          echo "Proje klasoru:"
-          find "$PROJECT_DIR" -maxdepth 2 -type f | sort | head -100
 
       - name: Fix project permissions
         shell: bash
@@ -103,7 +95,7 @@ jobs:
             cat > export_presets.cfg <<'EOF'
           [preset.0]
 
-          name="Android"
+          name="Android Debug"
           platform="Android"
           runnable=true
           advanced_options=false
@@ -129,14 +121,22 @@ jobs:
           architectures/arm64-v8a=true
           package/unique_name="com.elxvro.neonsurvivor"
           package/name="Neon Survivor"
-          version/code=3
-          version/name="0.1.3"
+          version/code=4
+          version/name="0.1.4"
           screen/immersive_mode=true
           EOF
           fi
 
-          echo "export_presets.cfg:"
-          cat export_presets.cfg
+          PRESET_NAME="$(awk -F'"' '/^name=/{print $2; exit}' export_presets.cfg)"
+
+          if [ -z "$PRESET_NAME" ]; then
+            echo "ERROR: export preset adi okunamadi."
+            cat export_presets.cfg
+            exit 1
+          fi
+
+          echo "EXPORT_PRESET=$PRESET_NAME" >> "$GITHUB_ENV"
+          echo "Detected export preset: $PRESET_NAME"
 
       - name: Prepare Android debug keystore
         shell: bash
@@ -169,8 +169,10 @@ jobs:
           cd "$PROJECT_DIR"
           mkdir -p build
 
+          echo "Building with preset: $EXPORT_PRESET"
+
           godot --headless --verbose --path . \
-            --export-debug "Android" \
+            --export-debug "$EXPORT_PRESET" \
             "build/neon-survivor-debug.apk"
 
           test -s build/neon-survivor-debug.apk
@@ -179,7 +181,7 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: neon-survivor-v0.1.3-apk
+          name: neon-survivor-v0.1.4-apk
           path: ${{ env.PROJECT_DIR }}/build/neon-survivor-debug.apk
           if-no-files-found: error
           retention-days: 14
